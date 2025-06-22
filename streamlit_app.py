@@ -1,151 +1,72 @@
+# streamlit_app.py 또는 main.py
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import urllib.request
+import os
+import folium
+from folium.plugins import MarkerCluster
+from streamlit_folium import st_folium
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# ✅ 한글 폰트 설정
+def set_korean_font():
+    font_path = "NanumGothic.ttf"
+    if not os.path.exists(font_path):
+        try:
+            url = "https://github.com/naver/nanumfont/blob/master/ttf/NanumGothic.ttf?raw=true"
+            urllib.request.urlretrieve(url, font_path)
+        except Exception as e:
+            st.error(f"❌ 한글 폰트 다운로드 실패: {e}")
+            return
+    fm.fontManager.addfont(font_path)
+    font_name = fm.FontProperties(fname=font_path).get_name()
+    plt.rc('font', family=font_name)
+    plt.rcParams['axes.unicode_minus'] = False
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
-
+# ✅ CCTV 데이터 로드
 @st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+def load_cctv_data():
+    df = pd.read_excel("12_04_08_E_CCTV정보.xlsx", engine="openpyxl")
+    cols = df.columns.tolist()
+    find = lambda kw: next((c for c in cols if kw in c), None)
+    return df.rename(columns={
+        find("설치목적"): "목적",
+        find("도로명주소"): "설치장소",
+        find("위도"): "위도",
+        find("경도"): "경도",
+        find("설치연"): "설치연도",
+        find("카메라대수"): "대수"
+    }).dropna(subset=["위도", "경도"])
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# ✅ CCTV 지도 시각화
+def show_cctv_map():
+    set_korean_font()
+    st.title("📍 부산시 CCTV 위치 지도")
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+    df = load_cctv_data()
+    df_sample = df.sample(frac=0.3, random_state=42)
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+    m = folium.Map(
+        location=[df_sample["위도"].mean(), df_sample["경도"].mean()],
+        zoom_start=11,
+        tiles="CartoDB positron"
     )
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
+    marker_cluster = MarkerCluster().add_to(m)
+    for _, row in df_sample.iterrows():
+        popup = (
+            f"<b>목적:</b> {row['목적']}<br>"
+            f"<b>장소:</b> {row['설치장소']}<br>"
+            f"<b>연도:</b> {row['설치연도']}<br>"
+            f"<b>대수:</b> {row['대수']}"
         )
+        folium.Marker(
+            location=[row["위도"], row["경도"]],
+            popup=folium.Popup(popup, max_width=300)
+        ).add_to(marker_cluster)
+
+    st_folium(m, width=800, height=600)
+
+# ✅ Streamlit 앱 실행 시 바로 호출
+show_cctv_map()
